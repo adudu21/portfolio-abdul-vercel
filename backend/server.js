@@ -681,7 +681,11 @@ server.use((error, _req, res, _next) => {
   return res.status(500).json({ error: "Internal server error." });
 });
 
-const port = Number(process.env.PORT) || 3000;
-server.listen(port, () => {
-  console.log(`Portfolio server listening on port ${port}.`);
-});
+module.exports = server;
+
+if (!process.env.VERCEL) {
+  const port = Number(process.env.PORT) || 3000;
+  server.listen(port, () => {
+    console.log(`Portfolio server listening on port ${port}.`);
+  });
+}
