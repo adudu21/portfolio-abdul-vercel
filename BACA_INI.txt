@@ -1,0 +1,106 @@
+CARA PASANG UPDATE — LOGIN, CLOUDINARY, DAN HAPUS POSTINGAN
+
+Firebase Authentication digunakan untuk login admin. Media diunggah ke
+Cloudinary saat tombol "Bagikan" ditekan. Untuk penghapusan permanen, server
+backend memverifikasi Firebase ID token dan UID admin sebelum memanggil
+Cloudinary destroy API. Daftar kategori disimpan permanen di
+backend/categories.json; perubahan kategori juga memverifikasi Firebase ID
+token dan UID admin. Foto profil dapat diganti oleh admin; URL dan Cloudinary
+public_id foto aktif disimpan di backend/profile-photo.json, dan pergantian
+serta reset ke foto bawaan memverifikasi Firebase ID token dan UID admin.
+Reset foto profil hanya menghapus URL kustom dari penyimpanan backend; aset
+Cloudinary lama tidak dihapus.
+Edit deskripsi, kategori, kolaborator, dan gambar foto bawaan serta urutan
+galeri disimpan di backend/gallery-state.json setelah Firebase ID token admin
+diverifikasi. File aset bawaan tidak diubah; reset edit foto mengembalikan
+data dan gambar dari aset asli.
+API Secret Cloudinary hanya disimpan di backend.
+Postingan baru dan edit postingan Cloudinary masih disimpan di memori halaman
+dan metadata Cloudinary, bukan di database postingan; postingan baru tidak
+bertahan setelah refresh.
+
+MENJALANKAN BACKEND SECARA LOKAL:
+1. Pasang Node.js 18 atau lebih baru.
+2. Salin backend/.env.example menjadi backend/.env, lalu isi konfigurasi.
+   FIREBASE_ADMIN_UID harus sama dengan UID admin di script.js.
+3. Buat kredensial Firebase Admin SDK atau gunakan service account runtime.
+   Atur GOOGLE_APPLICATION_CREDENTIALS ke file service-account JSON yang
+   disimpan di luar folder website/repository. Jangan publikasikan file itu.
+4. Isi CLOUDINARY_API_KEY dan CLOUDINARY_API_SECRET dari Cloudinary Console.
+   Jangan menaruh API Secret di script.js atau file yang dikirim ke browser.
+5. Dari folder backend jalankan: npm install, lalu npm start.
+6. Buka website melalui http://localhost:3000 (bukan file://). Express
+   menyajikan website dan endpoint pada origin yang sama.
+
+DEPLOYMENT:
+- Deploy folder backend sebagai layanan Node.js dengan penyimpanan persisten
+  yang dapat ditulis untuk backend/categories.json dan
+  backend/profile-photo.json, dan backend/gallery-state.json, lalu
+  sajikan/reverse-proxy website serta
+  endpoint /api pada origin yang sama. Jika website
+  di origin berbeda, ubah CLOUDINARY_DELETE_API di script.js menjadi URL
+  backend penuh dan isi ALLOWED_ORIGIN dengan origin website yang tepat.
+  Endpoint foto profil otomatis menggunakan URL backend yang sama.
+- Pastikan preset upload Cloudinary tetap Unsigned. Penghapusan menggunakan
+  API Secret di backend, bukan preset unsigned.
+- File .env, service-account JSON, dan backend/node_modules sudah dikecualikan
+  dari git melalui .gitignore.
+
+-----------------------------------------------------------
+APA PENYEBAB BUGNYA
+-----------------------------------------------------------
+Ketemu 2 sumber masalah di style.css:
+
+1. Lingkaran dekoratif "orb" di belakang foto (.orb-one, .orb-two)
+   ukurannya di-hardcode 320px dan 140px di SEMUA ukuran layar.
+   Di HP yang lebarnya cuma sekitar 360-400px, lingkaran 320px itu
+   otomatis nyembul ke luar layar ke samping -- inilah "overflow"
+   yang bikin halaman bisa digeser ke kanan-kiri.
+
+2. Kartu foto di hero (.hero-card) dimiringkan pakai rotate() dan
+   digeser pakai translate() -- itu bagian dari desain aslinya
+   (efek "tumpukan kartu"). Di layar lebar, kemiringan itu aman
+   karena ada banyak ruang kosong di sekitarnya. Tapi begitu
+   kontainernya menyempit di HP, sudut kartu yang miring itu jadi
+   nyembul keluar dari kotaknya sendiri dan numpuk ke teks di
+   atas/bawahnya -- karena sebelumnya tidak ada kontainer yang
+   "memotong" kelebihannya.
+
+-----------------------------------------------------------
+APA YANG DIPERBAIKI (TANPA UBAH DESAIN DASAR)
+-----------------------------------------------------------
+- Ditambahkan "overflow-x: hidden" di html dan body sebagai jaring
+  pengaman global -- kalau ada elemen manapun yang kebablasan ke
+  samping, browser motong otomatis, tidak sampai bikin halaman
+  bisa di-scroll ke kanan.
+- Khusus di dalam breakpoint tablet & mobile (bukan di desktop,
+  supaya tampilan PC yang sudah bagus tidak ikut berubah),
+  .hero-visual (kontainer pembungkus foto) dikasih "overflow:
+  hidden" juga, jadi apapun yang nyembul dari kartu/panah/orb akan
+  dipotong rapi di dalam kotaknya sendiri, tidak numpuk ke teks.
+- Sudut kemiringan kartu (rotate) dan jarak geser (translate)
+  dikecilkan bertahap: lebih kecil di tablet, lebih kecil lagi di
+  HP. Efek "kartu bertumpuk miring"-nya tetap ada dan tetap
+  kelihatan sama gayanya -- cuma derajatnya disesuaikan supaya
+  muat rapi di kontainer yang lebih sempit, tidak sampai nyembul.
+- Tombol panah kiri/kanan di HP/tablet digeser dari posisi
+  "nongol keluar kotak" (left:-8px / right:-8px, memang gaya
+  desktop) jadi sedikit masuk ke dalam (left:6px / right:6px),
+  supaya tidak ikut menyumbang overflow ke samping.
+- Lingkaran orb dikecilkan bertahap per breakpoint (200px/100px di
+  tablet, 140px/70px di HP) supaya proporsional dengan lebar layar
+  dan tidak pernah nyembul ke luar lagi.
+- .hero-visual yang sebelumnya punya tinggi minimum tetap (fixed
+  min-height, angka hasil kira-kira) sekarang dibuat "auto" di
+  tablet & HP -- tingginya menyesuaikan isi foto itu sendiri,
+  jadi tidak ada lagi jarak kosong aneh atau kepotong gara-gara
+  angka px yang tidak pas di device tertentu.
+- Tampilan desktop (di atas 850px) SAMA SEKALI TIDAK diubah -- semua
+  aturan di atas cuma berlaku di dalam @media (max-width: 850px)
+  dan @media (max-width: 520px), jadi PC tetap seperti semula.
+
+Ringkasnya: PC 2 kolom seperti biasa, tablet & HP jadi 1 kolom
+(teks di atas, foto di bawah) dengan kartu yang tetap miring ala
+gaya aslinya tapi sudah "dikandangkan" rapi di dalam kotaknya
+sendiri -- jadi tidak akan pernah lagi menimpa teks atau bikin
+halaman bisa digeser ke samping.

@@ -1,0 +1,34 @@
+[
+  {
+    "key": "portrait",
+    "label": "Portrait"
+  },
+  {
+    "key": "community",
+    "label": "Community Documentation"
+  },
+  {
+    "key": "street",
+    "label": "Street"
+  },
+  {
+    "key": "urban",
+    "label": "Urban"
+  },
+  {
+    "key": "architecture",
+    "label": "Architecture"
+  },
+  {
+    "key": "automotive",
+    "label": "Automotive"
+  },
+  {
+    "key": "product",
+    "label": "Product"
+  },
+  {
+    "key": "design-graphic",
+    "label": "Design Graphic"
+  }
+]
