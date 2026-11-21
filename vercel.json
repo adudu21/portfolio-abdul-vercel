@@ -7,6 +7,10 @@
   },
   "rewrites": [
     {
+      "source": "/api/(.*)",
+      "destination": "/api/[...route]"
+    },
+    {
       "source": "/healthz",
       "destination": "/api/healthz"
     }
