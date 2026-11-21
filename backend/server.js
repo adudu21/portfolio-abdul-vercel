@@ -12,6 +12,7 @@ const {
   initializeApp,
 } = require("firebase-admin/app");
 const { getAuth } = require("firebase-admin/auth");
+const { getFirestore } = require("firebase-admin/firestore");
 
 require("dotenv").config({ path: path.join(__dirname, ".env") });
 
@@ -24,13 +25,55 @@ function requiredEnv(name) {
 const firebaseProjectId = requiredEnv("FIREBASE_PROJECT_ID");
 const adminUid = requiredEnv("FIREBASE_ADMIN_UID");
 const cloudinaryCloudName = requiredEnv("CLOUDINARY_CLOUD_NAME");
+function firebaseCredentialOptions() {
+  const rawServiceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim();
+  if (rawServiceAccount) {
+    let serviceAccount;
+    try {
+      serviceAccount = JSON.parse(rawServiceAccount);
+    } catch {
+      throw new Error("FIREBASE_SERVICE_ACCOUNT_JSON must contain valid JSON.");
+    }
+    if (serviceAccount.private_key) {
+      serviceAccount.private_key = serviceAccount.private_key.replace(
+        /\\n/g,
+        "\n",
+      );
+    }
+    return {
+      credential: require("firebase-admin").credential.cert(serviceAccount),
+    };
+  }
+
+  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL?.trim();
+  const privateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n");
+  if (clientEmail && privateKey) {
+    return {
+      credential: require("firebase-admin").credential.cert({
+        projectId: firebaseProjectId,
+        clientEmail,
+        privateKey,
+      }),
+    };
+  }
+
+  if (process.env.VERCEL) {
+    throw new Error(
+      "Set FIREBASE_SERVICE_ACCOUNT_JSON or FIREBASE_CLIENT_EMAIL + FIREBASE_PRIVATE_KEY in Vercel Environment Variables.",
+    );
+  }
+  return { credential: applicationDefault() };
+}
+
 const app = getApps().length
   ? getApp()
   : initializeApp({
-      credential: applicationDefault(),
+      ...firebaseCredentialOptions(),
       projectId: firebaseProjectId,
     });
 const firebaseAuth = getAuth(app);
+const firestore = getFirestore(app);
+const configCollection = firestore.collection("portfolioConfig");
 
 cloudinary.config({
   cloud_name: cloudinaryCloudName,
@@ -40,7 +83,9 @@ cloudinary.config({
 });
 
 const server = express();
-const allowedOrigin = process.env.ALLOWED_ORIGIN?.trim();
+const allowedOrigin = (
+  process.env.ALLOWED_ORIGIN || "https://portfolio-abdul-rahman-rho.vercel.app"
+).trim();
 const allowedOrigins = new Set(
   (allowedOrigin || "")
     .split(",")
@@ -48,9 +93,47 @@ const allowedOrigins = new Set(
     .filter(Boolean),
 );
 const siteRoot = path.resolve(__dirname, "..");
-const categoryStorePath = path.join(__dirname, "categories.json");
-const profilePhotoStorePath = path.join(__dirname, "profile-photo.json");
-const galleryStateStorePath = path.join(__dirname, "gallery-state.json");
+// Firestore is the source of truth in production. Bundled JSON files are
+// read-only bootstrap defaults for the first deployment / local migration.
+const initialDataPath = (name) => path.join(__dirname, name);
+const configDocuments = {
+  categories: "categories",
+  profilePhoto: "profilePhoto",
+  galleryState: "galleryState",
+};
+async function readBootstrapJson(filename, fallback) {
+  try {
+    return JSON.parse(await fs.readFile(initialDataPath(filename), "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT") return fallback;
+    throw error;
+  }
+}
+async function getConfigDocument(key, fallback) {
+  const ref = configCollection.doc(configDocuments[key]);
+  return firestore.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(ref);
+    if (snapshot.exists) return snapshot.data().value;
+    const value = await fallback();
+    transaction.set(ref, { value, updatedAt: new Date() });
+    return value;
+  });
+}
+async function setConfigDocument(key, value) {
+  await configCollection
+    .doc(configDocuments[key])
+    .set({ value, updatedAt: new Date() }, { merge: true });
+}
+async function updateConfigDocument(key, fallback, updater) {
+  const ref = configCollection.doc(configDocuments[key]);
+  return firestore.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(ref);
+    const current = snapshot.exists ? snapshot.data().value : await fallback();
+    const next = updater(current);
+    transaction.set(ref, { value: next, updatedAt: new Date() });
+    return next;
+  });
+}
 server.disable("x-powered-by");
 server.use(express.json({ limit: "2mb" }));
 
@@ -72,8 +155,9 @@ server.use(
 );
 
 async function readCategories() {
-  const contents = await fs.readFile(categoryStorePath, "utf8");
-  const categories = JSON.parse(contents);
+  const categories = await getConfigDocument("categories", () =>
+    readBootstrapJson("categories.json", []),
+  );
   if (
     !Array.isArray(categories) ||
     categories.some(
@@ -82,28 +166,19 @@ async function readCategories() {
         typeof category.key !== "string" ||
         typeof category.label !== "string",
     )
-  ) {
+  )
     throw new Error("Category storage is invalid.");
-  }
   return categories;
 }
 
 async function writeCategories(categories) {
-  const temporaryPath = `${categoryStorePath}.${process.pid}.${Date.now()}.tmp`;
-  await fs.writeFile(
-    temporaryPath,
-    `${JSON.stringify(categories, null, 2)}\n`,
-    {
-      encoding: "utf8",
-      flag: "wx",
-    },
-  );
-  await fs.rename(temporaryPath, categoryStorePath);
+  await setConfigDocument("categories", categories);
 }
 
 async function readProfilePhoto() {
-  const contents = await fs.readFile(profilePhotoStorePath, "utf8");
-  const photo = JSON.parse(contents);
+  const photo = await getConfigDocument("profilePhoto", () =>
+    readBootstrapJson("profile-photo.json", null),
+  );
   if (photo === null) return null;
   if (
     !photo ||
@@ -114,50 +189,34 @@ async function readProfilePhoto() {
     !photo.secure_url.startsWith(
       `https://res.cloudinary.com/${cloudinaryCloudName}/image/upload/`,
     )
-  ) {
+  )
     throw new Error("Profile photo storage is invalid.");
-  }
   return photo;
 }
 
 async function writeProfilePhoto(photo) {
-  const temporaryPath = `${profilePhotoStorePath}.${process.pid}.${Date.now()}.tmp`;
-  await fs.writeFile(temporaryPath, `${JSON.stringify(photo, null, 2)}\n`, {
-    encoding: "utf8",
-    flag: "wx",
-  });
-  await fs.rename(temporaryPath, profilePhotoStorePath);
+  await setConfigDocument("profilePhoto", photo);
 }
 
 async function readGalleryState() {
-  try {
-    const contents = await fs.readFile(galleryStateStorePath, "utf8");
-    const state = JSON.parse(contents);
-    if (
-      !state ||
-      typeof state !== "object" ||
-      Array.isArray(state) ||
-      !state.photoOverrides ||
-      typeof state.photoOverrides !== "object" ||
-      Array.isArray(state.photoOverrides) ||
-      !Array.isArray(state.order)
-    ) {
-      throw new Error("Gallery storage is invalid.");
-    }
-    return state;
-  } catch (error) {
-    if (error.code === "ENOENT") return { photoOverrides: {}, order: [] };
-    throw error;
-  }
+  const state = await getConfigDocument("galleryState", () =>
+    readBootstrapJson("gallery-state.json", { photoOverrides: {}, order: [] }),
+  );
+  if (
+    !state ||
+    typeof state !== "object" ||
+    Array.isArray(state) ||
+    !state.photoOverrides ||
+    typeof state.photoOverrides !== "object" ||
+    Array.isArray(state.photoOverrides) ||
+    !Array.isArray(state.order)
+  )
+    throw new Error("Gallery storage is invalid.");
+  return state;
 }
 
 async function writeGalleryState(state) {
-  const temporaryPath = `${galleryStateStorePath}.${process.pid}.${Date.now()}.tmp`;
-  await fs.writeFile(temporaryPath, `${JSON.stringify(state, null, 2)}\n`, {
-    encoding: "utf8",
-    flag: "wx",
-  });
-  await fs.rename(temporaryPath, galleryStateStorePath);
+  await setConfigDocument("galleryState", state);
 }
 
 function isGalleryAssetPath(value) {
@@ -343,15 +402,30 @@ server.put("/api/gallery-state", requireAdmin, async (req, res) => {
     return res.status(400).json({ error: error.message });
   }
   try {
-    const state = await readGalleryState();
-    if (update.photoOverrides) {
-      for (const [assetPath, value] of Object.entries(update.photoOverrides)) {
-        if (value === null) delete state.photoOverrides[assetPath];
-        else state.photoOverrides[assetPath] = value;
-      }
-    }
-    if (update.order) state.order = update.order;
-    await writeGalleryState(state);
+    const state = await updateConfigDocument(
+      "galleryState",
+      () =>
+        readBootstrapJson("gallery-state.json", {
+          photoOverrides: {},
+          order: [],
+        }),
+      (current) => {
+        const next = {
+          photoOverrides: { ...(current.photoOverrides || {}) },
+          order: current.order || [],
+        };
+        if (update.photoOverrides) {
+          for (const [assetPath, value] of Object.entries(
+            update.photoOverrides,
+          )) {
+            if (value === null) delete next.photoOverrides[assetPath];
+            else next.photoOverrides[assetPath] = value;
+          }
+        }
+        if (update.order) next.order = update.order;
+        return next;
+      },
+    );
     return res.json(state);
   } catch (error) {
     console.error("Gallery state update failed:", error.message);
@@ -412,17 +486,22 @@ server.post("/api/categories", requireAdmin, async (req, res) => {
   }
 
   try {
-    const categories = await readCategories();
+    let created = false;
+    const categories = await updateConfigDocument(
+      "categories",
+      () => readBootstrapJson("categories.json", []),
+      (current) => {
+        const existing = current.find((item) => item.key === category.key);
+        if (existing) return current;
+        created = true;
+        return [...current, category];
+      },
+    );
     const existing = categories.find((item) => item.key === category.key);
-    if (existing) {
-      if (existing.label !== category.label) {
-        return res.status(409).json({ error: "Category key already exists." });
-      }
-      return res.json({ categories });
+    if (existing?.label !== category.label) {
+      return res.status(409).json({ error: "Category key already exists." });
     }
-    categories.push(category);
-    await writeCategories(categories);
-    return res.status(201).json({ categories });
+    return res.status(created ? 201 : 200).json({ categories });
   } catch (error) {
     console.error("Category creation failed:", error.message);
     return res.status(500).json({ error: "Category could not be saved." });
@@ -436,14 +515,18 @@ server.delete("/api/categories/:key", requireAdmin, async (req, res) => {
   }
 
   try {
-    const categories = await readCategories();
-    const nextCategories = categories.filter(
-      (category) => category.key !== key,
+    let found = false;
+    const nextCategories = await updateConfigDocument(
+      "categories",
+      () => readBootstrapJson("categories.json", []),
+      (current) => {
+        const next = current.filter((category) => category.key !== key);
+        found = next.length !== current.length;
+        return next;
+      },
     );
-    if (nextCategories.length === categories.length) {
+    if (!found)
       return res.status(404).json({ error: "Category was not found." });
-    }
-    await writeCategories(nextCategories);
     return res.json({ categories: nextCategories });
   } catch (error) {
     console.error("Category deletion failed:", error.message);
@@ -600,10 +683,14 @@ server.post(
             resource_type,
             type: "upload",
           });
+          await cloudinary.uploader.add_tag("portfolio_item", [public_id], {
+            resource_type,
+            type: "upload",
+          });
           return { public_id, result: "ok" };
         } catch (error) {
           console.error(
-            `Cloudinary context update failed for ${public_id}: ${error.message}`,
+            `Cloudinary gallery metadata update failed for ${public_id}: ${error.message}`,
           );
           return { public_id, result: "error" };
         }
@@ -652,6 +739,10 @@ server.post("/api/cloudinary/delete", requireAdmin, async (req, res) => {
     });
   }
   return res.json({ results });
+});
+
+server.get("/api/healthz", (_req, res) => {
+  res.json({ status: "ok" });
 });
 
 server.get("/healthz", (_req, res) => res.json({ status: "ok" }));

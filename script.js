@@ -414,9 +414,15 @@ function orderGalleryItems(items) {
           .toLowerCase()
           .replace(/[\s_]+/g, "-") === "design-graphic",
     );
-  const designItems = items.filter(isDesignGraphic);
-  const otherItems = items.filter((item) => !isDesignGraphic(item));
-  return [...otherItems, ...designItems];
+  const cloudinaryItems = items.filter((item) =>
+    String(item.id || "").startsWith("cloudinary-"),
+  );
+  const localItems = items.filter(
+    (item) => !String(item.id || "").startsWith("cloudinary-"),
+  );
+  const designItems = localItems.filter(isDesignGraphic);
+  const otherItems = localItems.filter((item) => !isDesignGraphic(item));
+  return [...cloudinaryItems, ...otherItems, ...designItems];
 }
 
 function createLocalPosts() {
@@ -1119,6 +1125,14 @@ function initGallery() {
       .sort((left, right) => {
         const leftRank = rank.get(left.id);
         const rightRank = rank.get(right.id);
+        const leftIsNewCloudinary =
+          leftRank === undefined &&
+          String(left.id || "").startsWith("cloudinary-");
+        const rightIsNewCloudinary =
+          rightRank === undefined &&
+          String(right.id || "").startsWith("cloudinary-");
+        if (leftIsNewCloudinary && !rightIsNewCloudinary) return -1;
+        if (rightIsNewCloudinary && !leftIsNewCloudinary) return 1;
         if (leftRank === undefined && rightRank === undefined) return 0;
         if (leftRank === undefined) return 1;
         if (rightRank === undefined) return -1;
@@ -1154,6 +1168,20 @@ function initGallery() {
     photoOverrides = result.photoOverrides;
     return result;
   }
+
+  window.savePortfolioGalleryOrder = async () => {
+    if (!isAdminSession()) return false;
+    try {
+      await saveGalleryState({ order: allItems.map((item) => item.id) });
+      return true;
+    } catch (error) {
+      console.error("New post gallery order save failed:", error);
+      window.showPortfolioNotice?.(
+        error.message || "Urutan postingan baru gagal disimpan.",
+      );
+      return false;
+    }
+  };
 
   window.saveBuiltInPhotoEdit = async (item, override) => {
     if (!item?.assetKey || !isAdminSession())
@@ -1369,10 +1397,11 @@ function initGallery() {
       categoryLabel,
       label: categoryLabel,
     };
-    allItems = orderGalleryItems([
-      item,
-      ...allItems.filter((existing) => existing.id !== item.id),
-    ]);
+    const existingIndex = allItems.findIndex(
+      (existing) => existing.id === item.id,
+    );
+    if (existingIndex >= 0) allItems[existingIndex] = item;
+    else allItems = [item, ...allItems];
     syncCategories();
     visibleCount = GALLERY_PAGE_SIZE;
     renderFilters();
@@ -2226,7 +2255,7 @@ function initUploadWorkflow() {
     filePreparationToken += 1;
     preparingImages = false;
     filesInput.disabled = false;
-    selectedMedia.forEach(releasePreparedOriginal);
+    selectedMedia.forEach(releasePreparedMedia);
     selectedMedia = [];
     editOriginalPost = null;
     editPostId = "";
@@ -2649,31 +2678,20 @@ function initUploadWorkflow() {
       key: `new-${Date.now()}-${selectedMedia.length + index}`,
       kind: "new",
       file: null,
-      originalFile: file,
       type: "image",
       preview: URL.createObjectURL(file),
-      originalUploadPromise: null,
-      originalRetained: false,
-      originalCleanupHandled: false,
     }));
     setUploadStatus(`Mengompres ${files.length} gambar...`);
     try {
       const compressedFiles = await Promise.all(
-        preparedItems.map((item) => compressImageFile(item.originalFile)),
+        files.map((file) => compressImageFile(file)),
       );
       if (token !== filePreparationToken) {
-        preparedItems.forEach(releasePreparedOriginal);
+        preparedItems.forEach(releasePreparedMedia);
         return;
       }
       compressedFiles.forEach((file, index) => {
         preparedItems[index].file = file;
-        preparedItems[index].originalUploadPromise = uploadOriginalImage(
-          file,
-        ).then(
-          (asset) => ({ asset }),
-          (error) => ({ error }),
-        );
-        preparedItems[index].originalFile = null;
       });
       selectedMedia.push(...preparedItems);
       if (wasSelecting) setUploadStage("preview");
@@ -2686,7 +2704,7 @@ function initUploadWorkflow() {
       filesInput.value = "";
       showUploadMedia(0);
     } catch (error) {
-      preparedItems.forEach(releasePreparedOriginal);
+      preparedItems.forEach(releasePreparedMedia);
       if (token === filePreparationToken)
         setUploadStatus(error.message || "Gagal mengompres gambar.");
     } finally {
@@ -2720,7 +2738,7 @@ function initUploadWorkflow() {
       return;
     }
     const [removed] = selectedMedia.splice(index, 1);
-    releasePreparedOriginal(removed);
+    releasePreparedMedia(removed);
     if (!selectedMedia.length) {
       uploadPreviewIndex = 0;
       drawerOpen = false;
@@ -2979,7 +2997,7 @@ function initUploadWorkflow() {
         ? item.platform === "youtube"
           ? `https://img.youtube.com/vi/${videoDraft.videoId}/hqdefault.jpg`
           : await createVideoPlaceholder(item.platform)
-        : await compressImageFile(item.file);
+        : item.file;
       formData.append("file", file);
       formData.append("upload_preset", UPLOAD_PRESET);
       formData.append(
@@ -3004,12 +3022,10 @@ function initUploadWorkflow() {
         throw new Error("Cloudinary tidak mengembalikan public_id.");
       return {
         type: isVideoEmbed ? "embed" : "image",
-        full: metadata.full_url || result.secure_url,
+        full: result.secure_url,
         src: result.secure_url,
         public_id: result.public_id,
         resource_type: result.resource_type || "image",
-        original_public_id: metadata.original_public_id || "",
-        original_resource_type: "image",
         embedUrl: isVideoEmbed ? videoDraft.embedUrl : "",
         slideIndex: index,
       };
@@ -3044,53 +3060,6 @@ function initUploadWorkflow() {
     if (!response.ok)
       throw new Error(result.error || "Permintaan Cloudinary gagal.");
     return result;
-  }
-
-  async function uploadOriginalImage(file) {
-    const controller = new AbortController();
-    const formData = new FormData();
-    const compressedFile = await compressImageFile(file);
-    formData.append("file", compressedFile);
-    formData.append("upload_preset", UPLOAD_PRESET);
-    formData.append("tags", "portfolio_original");
-    formData.append(
-      "context",
-      makeCloudinaryContext({ asset_role: "original" }),
-    );
-    const timeoutId = setTimeout(
-      () => controller.abort(),
-      CLOUDINARY_UPLOAD_TIMEOUT_MS,
-    );
-    try {
-      const response = await fetch(
-        `https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`,
-        { method: "POST", body: formData, signal: controller.signal },
-      );
-      const responseText = await response.text();
-      let result;
-      try {
-        result = JSON.parse(responseText);
-      } catch {
-        throw new Error(
-          `Cloudinary tidak mengembalikan JSON untuk gambar asli (HTTP ${response.status}).`,
-        );
-      }
-      if (!response.ok)
-        throw new Error(
-          result.error?.message || "Gagal menyimpan gambar resolusi asli.",
-        );
-      if (!result.secure_url || !result.public_id)
-        throw new Error(
-          "Cloudinary tidak mengembalikan referensi gambar asli.",
-        );
-      return {
-        secure_url: result.secure_url,
-        public_id: result.public_id,
-        resource_type: result.resource_type || "image",
-      };
-    } finally {
-      clearTimeout(timeoutId);
-    }
   }
 
   async function deleteCloudinaryAssets(assets) {
@@ -3167,33 +3136,9 @@ function initUploadWorkflow() {
     ];
   }
 
-  function releasePreparedOriginal(item) {
+  function releasePreparedMedia(item) {
     if (!item) return;
     if (item.kind === "new" && item.preview) URL.revokeObjectURL(item.preview);
-    if (
-      item.kind !== "new" ||
-      item.originalRetained ||
-      item.originalCleanupHandled ||
-      !item.originalUploadPromise
-    )
-      return;
-
-    item.originalCleanupHandled = true;
-    item.originalUploadPromise
-      .then(async ({ asset }) => {
-        if (!asset) return;
-        const deletionResults = await deleteCloudinaryAssets([
-          { public_id: asset.public_id, resource_type: asset.resource_type },
-        ]);
-        if (deletionResults.length !== 1 || deletionResults[0].result !== "ok")
-          throw new Error("Gambar asli sementara gagal dihapus.");
-      })
-      .catch((error) => {
-        console.error("Gagal membersihkan gambar asli sementara:", error);
-        showNotice(
-          error.message || "Gagal membersihkan gambar asli sementara.",
-        );
-      });
   }
 
   uploadForm.addEventListener("submit", async (event) => {
@@ -3244,14 +3189,6 @@ function initUploadWorkflow() {
           }
           if (item.kind !== "new")
             throw new Error("Foto bawaan hanya mendukung media gambar.");
-          const originalResult = await item.originalUploadPromise;
-          if (originalResult.error) throw originalResult.error;
-          if (!originalResult.asset)
-            throw new Error("Gambar resolusi asli belum siap.");
-          newAssetsUploaded.push({
-            public_id: originalResult.asset.public_id,
-            resource_type: originalResult.asset.resource_type,
-          });
           const uploadedItem = await uploadNewMedia(
             item,
             index,
@@ -3265,8 +3202,6 @@ function initUploadWorkflow() {
               post_id: makePostId(),
               slide_index: index,
               asset_role: "gallery_override",
-              full_url: originalResult.asset.secure_url,
-              original_public_id: originalResult.asset.public_id,
             },
           );
           savedMedia.push(uploadedItem);
@@ -3287,9 +3222,6 @@ function initUploadWorkflow() {
           })),
         });
         editingChangesCommitted = true;
-        mediaToPublish.forEach((item) => {
-          if (item.kind === "new") item.originalRetained = true;
-        });
         finishUploadClose(false);
         showNotice("Foto bawaan berhasil diperbarui.");
         document.getElementById("work").scrollIntoView({ behavior: "smooth" });
@@ -3321,28 +3253,11 @@ function initUploadWorkflow() {
         if (item.kind === "existing") {
           uploaded.push({ ...item.media, slideIndex: index });
         } else {
-          let uploadMetadata = metadata;
-          if (item.kind === "new") {
-            const originalResult = await item.originalUploadPromise;
-            if (originalResult.error) throw originalResult.error;
-            if (!originalResult.asset)
-              throw new Error("Gambar resolusi asli belum siap.");
-            item.originalAsset = originalResult.asset;
-            newAssetsUploaded.push({
-              public_id: originalResult.asset.public_id,
-              resource_type: originalResult.asset.resource_type,
-            });
-            uploadMetadata = {
-              ...metadata,
-              full_url: originalResult.asset.secure_url,
-              original_public_id: originalResult.asset.public_id,
-            };
-          }
           const uploadedItem = await uploadNewMedia(
             item,
             index,
             mediaToPublish.length,
-            uploadMetadata,
+            metadata,
           );
           uploaded.push(uploadedItem);
           newAssetsUploaded.push({
@@ -3352,43 +3267,45 @@ function initUploadWorkflow() {
         }
       }
 
+      const assets = uploaded.map((item, index) => {
+        const isVideo = item.type === "embed";
+        return {
+          public_id: item.public_id,
+          resource_type: item.resource_type || "image",
+          context: {
+            type: isVideo ? "video" : "image",
+            ...(isVideo ? { video_url: item.embedUrl } : {}),
+            caption,
+            category: categoryKey,
+            category_label: categoryLabel,
+            collaborator,
+            post_id: postId,
+            slide_index: index,
+          },
+        };
+      });
+
       if (isEditing) {
         editingChangesCommitted = true;
+      }
+
+      const result = await postCloudinaryAdminRequest(
+        CLOUDINARY_CONTEXT_API,
+        { assets },
+      );
+      if (
+        !Array.isArray(result.results) ||
+        result.results.length !== assets.length ||
+        result.results.some((item) => item.result !== "ok")
+      )
+        throw new Error(
+          "Cloudinary belum mengonfirmasi metadata postingan.",
+        );
+
+      if (isEditing) {
         const existingItems = mediaToPublish.filter(
           (item) => item.kind === "existing",
         );
-        if (existingItems.length) {
-          const assets = existingItems.map((item, index) => {
-            const isVideo = item.media.type === "embed";
-            return {
-              public_id: item.media.public_id,
-              resource_type: item.media.resource_type || "image",
-              context: {
-                type: isVideo ? "video" : "image",
-                ...(isVideo ? { video_url: item.media.embedUrl } : {}),
-                caption,
-                category: categoryKey,
-                category_label: categoryLabel,
-                collaborator,
-                post_id: postId,
-                slide_index: index,
-              },
-            };
-          });
-          const result = await postCloudinaryAdminRequest(
-            CLOUDINARY_CONTEXT_API,
-            { assets },
-          );
-          if (
-            !Array.isArray(result.results) ||
-            result.results.length !== assets.length ||
-            result.results.some((item) => item.result !== "ok")
-          )
-            throw new Error(
-              "Cloudinary belum mengonfirmasi metadata postingan.",
-            );
-        }
-
         const retainedIds = new Set(
           existingItems.map((item) => item.media.public_id),
         );
@@ -3419,14 +3336,12 @@ function initUploadWorkflow() {
       };
       setUploadStatus("Menampilkan postingan di galeri...");
       tambahkanKeGaleri({ ...postData, label: categoryLabel });
-      mediaToPublish.forEach((item) => {
-        if (item.kind === "new") item.originalRetained = true;
-      });
       if (isEditing) {
         finishUploadClose(false);
         showNotice("Postingan berhasil diperbarui.");
         document.getElementById("work").scrollIntoView({ behavior: "smooth" });
       } else {
+        await window.savePortfolioGalleryOrder?.();
         setUploadStatus(
           "Upload berhasil. Postingan sudah ditambahkan ke galeri.",
         );
@@ -3438,9 +3353,6 @@ function initUploadWorkflow() {
         newAssetsUploaded.length &&
         (!isEditing || !editingChangesCommitted)
       ) {
-        selectedMedia.forEach((item) => {
-          if (item.kind === "new") item.originalCleanupHandled = true;
-        });
         try {
           const results = await deleteCloudinaryAssets(newAssetsUploaded);
           if (

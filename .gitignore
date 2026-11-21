@@ -2,3 +2,6 @@ backend/.env
 backend/node_modules/
 backend/service-account*.json
 backend/*firebase-adminsdk*.json
+node_modules/
+.env
+*.env

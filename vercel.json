@@ -1,13 +1,14 @@
 {
   "version": 2,
+  "functions": {
+    "api/[...route].js": {
+      "includeFiles": ["backend/*.json"]
+    }
+  },
   "rewrites": [
     {
-      "source": "/api/(.*)",
-      "destination": "/backend/server.js"
-    },
-    {
       "source": "/healthz",
-      "destination": "/backend/server.js"
+      "destination": "/api/healthz"
     }
   ]
 }
