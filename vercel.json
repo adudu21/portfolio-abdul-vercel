@@ -2,7 +2,7 @@
   "version": 2,
   "functions": {
     "api/[...route].js": {
-      "includeFiles": ["backend/*.json"]
+      "includeFiles": "backend/*.json"
     }
   },
   "rewrites": [
