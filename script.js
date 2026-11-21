@@ -1540,6 +1540,17 @@ function initLightbox() {
   const adminTrigger = document.getElementById("viewerAdminTrigger");
   const adminMenu = document.getElementById("viewerAdminMenu");
   const adminStatus = document.getElementById("viewerAdminStatus");
+  let imageLoadToken = 0;
+  let pendingFullImage = null;
+
+  function cancelPendingFullImage() {
+    imageLoadToken += 1;
+    if (!pendingFullImage) return;
+    pendingFullImage.onload = null;
+    pendingFullImage.onerror = null;
+    pendingFullImage.src = "";
+    pendingFullImage = null;
+  }
 
   function refreshAdminControls() {
     const item = viewerItems[viewerItemIndex];
@@ -1559,6 +1570,7 @@ function initLightbox() {
   }
 
   const close = () => {
+    cancelPendingFullImage();
     viewer.classList.remove("open");
     viewer.setAttribute("aria-hidden", "true");
     adminMenu.hidden = true;
@@ -1572,10 +1584,14 @@ function initLightbox() {
   };
 
   function renderMedia() {
+    cancelPendingFullImage();
+    const renderToken = imageLoadToken;
     const item = viewerItems[viewerItemIndex];
     if (!item) return;
+    const itemIndex = viewerItemIndex;
     const media = normalizedMedia(item);
     viewerMediaIndex = (viewerMediaIndex + media.length) % media.length;
+    const mediaIndex = viewerMediaIndex;
     const current = media[viewerMediaIndex];
     video.pause();
     video.removeAttribute("src");
@@ -1594,8 +1610,45 @@ function initLightbox() {
       video.hidden = true;
       frame.hidden = true;
       image.hidden = false;
-      image.src = current.full || current.src;
+      const previewUrl = current.src || current.full;
+      const fullUrl = current.full || current.src;
+      image.src = previewUrl;
       image.alt = `${item.label} photography`;
+      if (fullUrl && fullUrl !== previewUrl) {
+        const preloader = new Image();
+        preloader.decoding = "async";
+        pendingFullImage = preloader;
+        const releasePreloader = () => {
+          if (pendingFullImage === preloader) pendingFullImage = null;
+          preloader.onload = null;
+          preloader.onerror = null;
+        };
+        preloader.onload = () => {
+          releasePreloader();
+          if (
+            renderToken !== imageLoadToken ||
+            !viewer.classList.contains("open") ||
+            viewerItemIndex !== itemIndex ||
+            viewerMediaIndex !== mediaIndex
+          )
+            return;
+          const activeItem = viewerItems[viewerItemIndex];
+          if (!activeItem) return;
+          const activeMedia = normalizedMedia(activeItem)[viewerMediaIndex];
+          if (
+            !activeMedia ||
+            (activeMedia !== current &&
+              (activeMedia.src !== current.src ||
+                activeMedia.full !== current.full ||
+                activeMedia.public_id !== current.public_id ||
+                activeMedia.embedUrl !== current.embedUrl))
+          )
+            return;
+          image.src = fullUrl;
+        };
+        preloader.onerror = releasePreloader;
+        preloader.src = fullUrl;
+      }
     }
     dots.replaceChildren();
     media.forEach((_, index) => {
