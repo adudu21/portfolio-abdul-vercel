@@ -625,7 +625,7 @@ function parseContextUpdates(body) {
     const encodedContext = fields
       .map(
         ([key, value]) =>
-          `${key}=${String(value).replace(/\\/g, "\\\\").replace(/[|=]/g, "\\$&")}`,
+          `${key}=enc:${encodeURIComponent(String(value ?? ""))}`,
       )
       .join("|");
     return {

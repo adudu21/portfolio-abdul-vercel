@@ -323,7 +323,19 @@ async function compressImageFile(file) {
 
 function getCloudinaryContext(asset) {
   const context = asset.context || {};
-  return context.custom || context;
+  const customContext = context.custom || context;
+  return Object.fromEntries(
+    Object.entries(customContext).map(([key, value]) => {
+      if (typeof value !== "string" || !value.startsWith("enc:")) {
+        return [key, value];
+      }
+      try {
+        return [key, decodeURIComponent(value.slice(4))];
+      } catch {
+        return [key, value];
+      }
+    }),
+  );
 }
 
 function categoryLabelFromKey(key) {
@@ -1951,9 +1963,7 @@ function makeCloudinaryContext(values) {
   return Object.entries(values)
     .map(
       ([key, value]) =>
-        `${key}=${String(value ?? "")
-          .replace(/\\/g, "\\\\")
-          .replace(/[|=]/g, "\\$&")}`,
+        `${key}=enc:${encodeURIComponent(String(value ?? ""))}`,
     )
     .join("|");
 }
